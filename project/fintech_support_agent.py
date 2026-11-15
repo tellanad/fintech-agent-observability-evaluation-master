@@ -443,6 +443,7 @@ def build_support_agent(
     graph.add_edge("account_agent", END)
     graph.add_edge("escalation_agent", END)
 
+    _setup_otel_tracing()
     run_id = f"{collection_name}-{uuid.uuid4().hex[:8]}"
     app = graph.compile()
     base_config: dict = {
@@ -467,6 +468,68 @@ def build_support_agent(
         "rag_chain": rag_chain,  # Standalone RAG chain (retriever → LLM)
         "vectorstore": vectorstore,  # Raw Chroma store (for similarity_search_with_relevance_scores)
     }
+
+
+_otel_initialized = False
+
+
+def _setup_otel_tracing() -> None:
+    """Configure vendor-agnostic OpenTelemetry (OTLP/HTTP) tracing once per process.
+
+    Reads standard OTEL_EXPORTER_OTLP_* environment variables so any OTLP backend
+    (Arize AX, Phoenix, Grafana Tempo, Datadog, Honeycomb, Jaeger, etc.) can be
+    used without code changes. Falls back to PHOENIX_* / ARIZE_SPACE_ID env vars
+    when OTEL_EXPORTER_OTLP_* is not set.
+    """
+    global _otel_initialized
+    if _otel_initialized:
+        return
+
+    otel_endpoint = (
+        os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
+    phoenix_endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
+    if not (otel_endpoint or phoenix_endpoint):
+        return
+
+    try:
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        from openinference.instrumentation.langchain import LangChainInstrumentor
+    except ImportError:
+        return
+
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "fintech-support-agent")
+    resource = Resource.create({
+        "service.name": service_name,
+        "openinference.project.name": service_name,
+    })
+    tracer_provider = TracerProvider(resource=resource)
+
+    exporter_kwargs: dict = {}
+    if not otel_endpoint and phoenix_endpoint:
+        endpoint = phoenix_endpoint.rstrip("/")
+        if not endpoint.endswith("/v1/traces"):
+            endpoint = f"{endpoint}/v1/traces"
+        exporter_kwargs["endpoint"] = endpoint
+
+        headers: dict[str, str] = {}
+        api_key = os.environ.get("PHOENIX_API_KEY")
+        space_id = os.environ.get("ARIZE_SPACE_ID")
+        if space_id and api_key:
+            headers["space_id"] = space_id
+            headers["api_key"] = api_key
+        elif api_key:
+            headers["authorization"] = f"Bearer {api_key}"
+        if headers:
+            exporter_kwargs["headers"] = headers
+
+    tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(**exporter_kwargs)))
+    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    _otel_initialized = True
 
 
 def _get_langfuse_callbacks() -> list:

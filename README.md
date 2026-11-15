@@ -1,5 +1,5 @@
 # Agent Observability, Evaluation & Safety Workshop
-## Learn LangSmith · DeepEval · Guardrails AI · Presidio
+## Learn LangSmith · Langfuse · Arize AX / Phoenix · DeepEval · Guardrails AI · Presidio
 
 A **4-hour hands-on workshop** teaching production-grade AI agent hardening through a concrete, runnable project: a multi-agent FinTech customer support system for SecureBank.
 
@@ -10,6 +10,9 @@ A **4-hour hands-on workshop** teaching production-grade AI agent hardening thro
 | Concept | What It Is | How We Use It |
 |---|---|---|
 | **LangSmith** | LLM observability & evaluation platform | Trace every LLM call, debug failures, run A/B experiments |
+| **Langfuse** | Open-source LLM observability & session tracing | Capture LangGraph callbacks, group runs by `langfuse_session_id` & `run:<id>` tags |
+| **Arize AX / Phoenix** | OpenTelemetry (OpenInference) LLM tracing | Auto-instrument LangChain/LangGraph spans via OpenTelemetry |
+| **OpenTelemetry (OTLP)** | Vendor-neutral tracing standard | Export OpenInference spans to any OTLP backend via `OTEL_EXPORTER_OTLP_*` (no vendor lock-in) |
 | **DeepEval** | Open-source evaluation framework (pytest-native) | Faithfulness, hallucination, answer relevancy, G-Eval metrics |
 | **Guardrails AI** | Output validation framework with 50+ validators | RegexMatch (SSN), ToxicLanguage, CompetitorCheck |
 | **Presidio** | Microsoft's PII detection & redaction engine | Detect and redact SSNs, names, emails, credit cards |
@@ -180,13 +183,31 @@ cp .env.example .env
 
 Then edit `.env` and set:
 ```env
+# Required
 OPENAI_API_KEY=sk-your-key-here
+
+# LangSmith
 LANGCHAIN_API_KEY=lsv2_pt_your-langsmith-key-here
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT=fintech-support-agent
+
+# Optional: Langfuse (US Cloud: https://us.cloud.langfuse.com | EU Cloud: https://cloud.langfuse.com)
+LANGFUSE_PUBLIC_KEY=pk-lf-your-public-key
+LANGFUSE_SECRET_KEY=sk-lf-your-secret-key
+LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
+
+# Optional: Vendor-agnostic OpenTelemetry (any OTLP backend: Grafana Tempo, Datadog, Jaeger, Honeycomb, Arize, etc.)
+OTEL_EXPORTER_OTLP_ENDPOINT=https://your-otlp-collector.example.com
+OTEL_EXPORTER_OTLP_HEADERS=authorization=Bearer your-token
+OTEL_SERVICE_NAME=fintech-support-agent
+
+# Optional: Arize AX or Arize Phoenix (auto-wired via OpenTelemetry if OTEL_EXPORTER_OTLP_* is unset)
+PHOENIX_API_KEY=your-arize-or-phoenix-api-key
+PHOENIX_COLLECTOR_ENDPOINT=https://otlp.arize.com/v1/traces  # or http://localhost:6006 for local Phoenix
+ARIZE_SPACE_ID=your-arize-space-id                          # required for Arize AX
 ```
 
-Get your LangSmith API key at [smith.langchain.com](https://smith.langchain.com) (free Developer plan — 1 seat, 5K traces/month).
+Get your LangSmith API key at [smith.langchain.com](https://smith.langchain.com) (free Developer plan — 1 seat, 5K traces/month). When Langfuse or Arize/Phoenix keys are present in `.env`, `build_support_agent()` in `project/fintech_support_agent.py` automatically attaches them globally and prints a unique `Trace Run/Session ID` (`run:<id>`) for filtering each execution in your dashboards.
 
 ### 7. Install Guardrails Hub validators (Module C)
 
