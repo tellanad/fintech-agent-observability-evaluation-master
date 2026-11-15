@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+.venv-*/
+venv/
+env/
+chroma_db/
+*.log
+audit_log*.jsonl
+.claude/
+.deepeval/
+batch_input.jsonl
+.pdf_images/
