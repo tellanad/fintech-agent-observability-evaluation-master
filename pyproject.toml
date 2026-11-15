@@ -23,6 +23,7 @@ dependencies = [
     "langfuse>=5.2.0",
     "arize-phoenix-otel>=0.17.3",
     "openinference-instrumentation-langchain>=0.1.86",
+    "arize>=8.64.0",
 ]
 
 [tool.uv]

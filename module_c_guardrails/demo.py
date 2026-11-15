@@ -49,7 +49,33 @@ os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "project"))
-from fintech_support_agent import build_support_agent, ask
+from contextlib import ExitStack, contextmanager
+from fintech_support_agent import build_support_agent, ask, get_otel_tracer
+
+try:
+    from langfuse import observe as _langfuse_observe, get_client as _get_langfuse_client
+except ImportError:
+    _langfuse_observe = None
+    _get_langfuse_client = None
+
+
+def observe_if_available(name: str):
+    """Apply Langfuse @observe when installed, otherwise pass through."""
+    if _langfuse_observe is not None:
+        return _langfuse_observe(name=name)
+    return lambda fn: fn
+
+
+@contextmanager
+def _trace_guardrail(name: str):
+    """Open both an OpenTelemetry span and a Langfuse observation for a guardrail step."""
+    with ExitStack() as stack:
+        otel_span = stack.enter_context(get_otel_tracer().start_as_current_span(name))
+        if _get_langfuse_client is not None and os.environ.get("LANGFUSE_PUBLIC_KEY"):
+            lf_span = stack.enter_context(_get_langfuse_client().start_as_current_observation(name=name))
+        else:
+            lf_span = None
+        yield otel_span, lf_span
 
 # ---------------------------------------------------------------------------
 # Build the multi-agent pipeline
@@ -452,73 +478,105 @@ The complete pipeline:
 """)
 
 
+@observe_if_available("guarded_pipeline")
 def guarded_pipeline(query):
     """Full guarded pipeline: moderation → regex → injection classifier → agent → Guardrails AI → Presidio."""
-    # Step 1: OpenAI Moderation API (free) — catches violence/hate/self-harm
-    t0 = time.time()
-    try:
-        mod_response = client.moderations.create(input=query)
-        mod_result = mod_response.results[0]
-        mod_ms = (time.time() - t0) * 1000
-        if mod_result.flagged:
-            cats = [c for c, v in mod_result.categories.model_dump().items() if v]
-            print(f"    [MODERATION] Flagged: {cats} ({mod_ms:.0f}ms) — 0 LLM calls")
-            return SAFE_FALLBACK
-    except Exception as e:
-        mod_ms = (time.time() - t0) * 1000
-        print(f"    [MODERATION] API error ({mod_ms:.0f}ms): {e} — skipping")
+    with _trace_guardrail("guarded_pipeline") as (root_otel, _):
+        root_otel.set_attribute("input.value", query)
+        root_otel.set_attribute("run.id", agent["run_id"])
 
-    # Step 2: Input guard (regex) — block before LLM
-    t0 = time.time()
-    blocked_response, reason = input_guard(query)
-    regex_ms = (time.time() - t0) * 1000
-    if blocked_response:
-        print(f"    [INPUT GUARD] Blocked: {reason} ({regex_ms:.1f}ms) — 0 LLM calls")
-        return blocked_response
+        # Step 1: OpenAI Moderation API (free) — catches violence/hate/self-harm
+        t0 = time.time()
+        with _trace_guardrail("guardrail.moderation") as (otel_span, lf_span):
+            try:
+                mod_response = client.moderations.create(input=query)
+                mod_result = mod_response.results[0]
+                mod_ms = (time.time() - t0) * 1000
+                otel_span.set_attribute("guardrail.flagged", bool(mod_result.flagged))
+                if lf_span is not None:
+                    lf_span.update(metadata={"flagged": bool(mod_result.flagged)})
+                if mod_result.flagged:
+                    cats = [c for c, v in mod_result.categories.model_dump().items() if v]
+                    otel_span.set_attribute("guardrail.categories", str(cats))
+                    root_otel.set_attribute("guardrail.blocked_by", "moderation")
+                    print(f"    [MODERATION] Flagged: {cats} ({mod_ms:.0f}ms) — 0 LLM calls")
+                    return SAFE_FALLBACK
+            except Exception as e:
+                mod_ms = (time.time() - t0) * 1000
+                print(f"    [MODERATION] API error ({mod_ms:.0f}ms): {e} — skipping")
 
-    # Step 3: LLM injection classifier — catches rephrased attacks
-    t0 = time.time()
-    try:
-        label = injection_chain.invoke({"query": query}).strip().lower()
-        inj_ms = (time.time() - t0) * 1000
-        if "injection" in label:
-            print(f"    [INJECTION] Blocked: prompt injection detected ({inj_ms:.0f}ms)")
-            return SAFE_FALLBACK
-    except Exception as e:
-        inj_ms = (time.time() - t0) * 1000
-        print(f"    [INJECTION] Classifier error ({inj_ms:.0f}ms): {e} — skipping")
+        # Step 2: Input guard (regex) — block before LLM
+        t0 = time.time()
+        with _trace_guardrail("guardrail.input_regex") as (otel_span, lf_span):
+            blocked_response, reason = input_guard(query)
+            regex_ms = (time.time() - t0) * 1000
+            otel_span.set_attribute("guardrail.blocked", bool(blocked_response))
+            if lf_span is not None:
+                lf_span.update(metadata={"blocked": bool(blocked_response), "reason": reason})
+            if blocked_response:
+                otel_span.set_attribute("guardrail.reason", reason or "")
+                root_otel.set_attribute("guardrail.blocked_by", f"input_regex:{reason}")
+                print(f"    [INPUT GUARD] Blocked: {reason} ({regex_ms:.1f}ms) — 0 LLM calls")
+                return blocked_response
 
-    # Step 4: Run agent
-    t0 = time.time()
-    result = ask(app, query)
-    answer = result["response"]
-    agent_ms = (time.time() - t0) * 1000
+        # Step 3: LLM injection classifier — catches rephrased attacks
+        t0 = time.time()
+        with _trace_guardrail("guardrail.injection_classifier") as (otel_span, lf_span):
+            try:
+                label = injection_chain.invoke({"query": query}).strip().lower()
+                inj_ms = (time.time() - t0) * 1000
+                blocked = "injection" in label
+                otel_span.set_attribute("guardrail.blocked", blocked)
+                if lf_span is not None:
+                    lf_span.update(output={"label": label, "blocked": blocked})
+                if blocked:
+                    root_otel.set_attribute("guardrail.blocked_by", "injection_classifier")
+                    print(f"    [INJECTION] Blocked: prompt injection detected ({inj_ms:.0f}ms)")
+                    return SAFE_FALLBACK
+            except Exception as e:
+                inj_ms = (time.time() - t0) * 1000
+                print(f"    [INJECTION] Classifier error ({inj_ms:.0f}ms): {e} — skipping")
 
-    # Step 5: Guardrails AI validation (SSN pattern + competitor check)
-    t0 = time.time()
-    if guardrails_ai_available:
-        try:
-            ssn_guard.validate(answer)
-            competitor_guard.validate(answer)
-        except Exception:
-            guard_ms = (time.time() - t0) * 1000
-            print(f"    [GUARDRAILS AI] Validation failed ({guard_ms:.0f}ms) — blocked")
-            return SAFE_FALLBACK
-    guard_ms = (time.time() - t0) * 1000
+        # Step 4: Run agent
+        t0 = time.time()
+        result = ask(app, query)
+        answer = result["response"]
+        agent_ms = (time.time() - t0) * 1000
 
-    # Step 6: Presidio PII redaction (names, dates, etc.)
-    t0 = time.time()
-    if presidio_available:
-        output_pii = analyzer.analyze(text=answer, language="en")
-        if output_pii:
-            entities = [r.entity_type for r in output_pii]
-            answer = anonymizer.anonymize(text=answer, analyzer_results=output_pii).text
-            presidio_ms = (time.time() - t0) * 1000
-            print(f"    [PRESIDIO] Redacted: {entities} ({presidio_ms:.0f}ms)")
-    presidio_ms = (time.time() - t0) * 1000
+        # Step 5: Guardrails AI validation (SSN pattern + competitor check)
+        t0 = time.time()
+        with _trace_guardrail("guardrail.guardrails_ai") as (otel_span, lf_span):
+            if guardrails_ai_available:
+                try:
+                    ssn_guard.validate(answer)
+                    competitor_guard.validate(answer)
+                    otel_span.set_attribute("guardrail.passed", True)
+                except Exception:
+                    guard_ms = (time.time() - t0) * 1000
+                    otel_span.set_attribute("guardrail.passed", False)
+                    root_otel.set_attribute("guardrail.blocked_by", "guardrails_ai")
+                    print(f"    [GUARDRAILS AI] Validation failed ({guard_ms:.0f}ms) — blocked")
+                    return SAFE_FALLBACK
+        guard_ms = (time.time() - t0) * 1000
 
-    print(f"    [TIMING] moderation={mod_ms:.0f}ms  regex={regex_ms:.1f}ms  injection={inj_ms:.0f}ms  agent={agent_ms:.0f}ms  guardrails_ai={guard_ms:.0f}ms  presidio={presidio_ms:.0f}ms")
-    return answer
+        # Step 6: Presidio PII redaction (names, dates, etc.)
+        t0 = time.time()
+        with _trace_guardrail("guardrail.presidio") as (otel_span, lf_span):
+            if presidio_available:
+                output_pii = analyzer.analyze(text=answer, language="en")
+                if output_pii:
+                    entities = [r.entity_type for r in output_pii]
+                    answer = anonymizer.anonymize(text=answer, analyzer_results=output_pii).text
+                    presidio_ms = (time.time() - t0) * 1000
+                    otel_span.set_attribute("guardrail.redacted_entities", str(entities))
+                    if lf_span is not None:
+                        lf_span.update(output={"redacted_entities": entities})
+                    print(f"    [PRESIDIO] Redacted: {entities} ({presidio_ms:.0f}ms)")
+        presidio_ms = (time.time() - t0) * 1000
+
+        root_otel.set_attribute("output.value", answer)
+        print(f"    [TIMING] moderation={mod_ms:.0f}ms  regex={regex_ms:.1f}ms  injection={inj_ms:.0f}ms  agent={agent_ms:.0f}ms  guardrails_ai={guard_ms:.0f}ms  presidio={presidio_ms:.0f}ms")
+        return answer
 
 
 # Run ALL queries through the full pipeline

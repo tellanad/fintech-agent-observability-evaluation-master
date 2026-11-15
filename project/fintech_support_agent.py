@@ -471,6 +471,15 @@ def build_support_agent(
 
 
 _otel_initialized = False
+_otel_tracer_provider = None
+
+
+def get_otel_tracer():
+    """Return an OpenTelemetry tracer (or a no-op tracer if OTEL is not configured)."""
+    if _otel_tracer_provider is not None:
+        return _otel_tracer_provider.get_tracer("fintech-support-agent")
+    from opentelemetry import trace
+    return trace.get_tracer("fintech-support-agent")
 
 
 def _setup_otel_tracing() -> None:
@@ -481,7 +490,7 @@ def _setup_otel_tracing() -> None:
     used without code changes. Falls back to PHOENIX_* / ARIZE_SPACE_ID env vars
     when OTEL_EXPORTER_OTLP_* is not set.
     """
-    global _otel_initialized
+    global _otel_initialized, _otel_tracer_provider
     if _otel_initialized:
         return
 
@@ -529,6 +538,7 @@ def _setup_otel_tracing() -> None:
 
     tracer_provider.add_span_processor(SimpleSpanProcessor(OTLPSpanExporter(**exporter_kwargs)))
     LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    _otel_tracer_provider = tracer_provider
     _otel_initialized = True
 
 
