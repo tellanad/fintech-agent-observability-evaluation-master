@@ -40,4 +40,9 @@ extraPaths = ["project", "module_b_evaluation"]
 venvPath = "."
 venv = ".venv"
 
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+]
+
 

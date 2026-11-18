@@ -313,6 +313,20 @@ python module_a_observability/demo.py
                 └── No context retrieval — just empathy + contact info
 ```
 
+### What changes when real customers use this agent?
+
+Imagine a customer asks, “Why did I get an overdraft fee, and can someone help me dispute it?” A few choices that make the workshop easy to follow matter more when that customer is waiting for an answer.
+
+| Design choice | Tradeoff | Possible fix |
+|---|---|---|
+| Choose one specialist | One route is easy to trace, but answering the fee question can leave the dispute untouched. An unknown intent also defaults to policy. | Track both requests, explain the fee, then offer to open the dispute. If the intent is unclear, ask a clarifying question. |
+| Read the three closest policy passages | A short search is fast, but three passages about the standard fee could all miss the waiver. | Retrieve the surrounding policy section so the model can see nearby exceptions. If the policy still doesn't settle the question, ask for the missing detail or refer it to support. |
+| Rerank search results | Grading six candidate passages one at a time can improve relevance, but it takes a policy question from two chat calls to eight. | Use a reranker that scores the candidates in one batch. Compare waiver-answer accuracy and response time against the basic search before enabling it. |
+| Build the search index in memory | Local setup is simple, but each server rebuilds its own copy and may serve an older fee schedule. | Build and test one shared index per policy revision, then switch all servers to that version. Record the revision with each answer. |
+| Look up an account by number | Entering a number makes the demo easy to try, but knowing a number doesn't prove account access. The mock record also sends SSN digits to the model. | Have the backend verify that the signed-in customer can access the account. For a balance question, return only the balance and currency to the model. |
+| Capture detailed traces | A trace helps explain a wrong answer, but recording a full account lookup can copy private data into the debugging tool. | Export approved fields such as request ID, route, latency, and policy revision. Check a sample account trace to verify that prompts and responses cannot leak account details. |
+| Generate a handoff message | The customer gets an immediate reply, but nobody receives their request when the graph ends. | Create a support ticket and wait for its ID before promising follow-up. Reuse the same request ID on retries to avoid duplicate tickets. If creation fails, give the customer another way to reach support. |
+
 ### Full Production Pipeline (After All Modules)
 
 ```
