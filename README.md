@@ -43,7 +43,8 @@ ACC-11111: Carol Davis, High-Yield Savings, $85,320.00, FROZEN (fraud review)
 ```
 
 ---
-
+## Design 
+![alt text](<Screenshot 2026-11-18 at 8.02.45 AM.png>)
 ## Project Structure
 
 Modules are lettered in teaching order. Each module introduces new production hardening techniques applied to the same FinTech agent.
