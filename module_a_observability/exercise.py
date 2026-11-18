@@ -18,12 +18,12 @@ load_dotenv()
 
 # chromadb's posthog telemetry client is incompatible with posthog>=3 — silence it
 logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
-
+os.environ["LANGCHAIN_PROJECT"] = "observability_exercise"
 # ---------------------------------------------------------------------------
 # TODO 1: Enable LangSmith tracing
 #
 # Set these environment variables (or add them to your .env file):
-#   LANGCHAIN_TRACING_V2 = "true"
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
 #   LANGCHAIN_API_KEY    = "<your LangSmith API key>"
 #
 # Verify tracing is enabled by checking the env var.
@@ -45,12 +45,21 @@ from fintech_support_agent import build_support_agent, ask
 # ---------------------------------------------------------------------------
 # TODO 2: Build the multi-agent pipeline
 #
+print("LangSmith key loaded:", bool(
+    os.getenv("LANGSMITH_API_KEY") or os.getenv("LANGCHAIN_API_KEY")
+))
+print("Tracing project:",
+      os.getenv("LANGSMITH_PROJECT")
+      or os.getenv("LANGCHAIN_PROJECT")
+      or "default")
 # Use build_support_agent() with collection_name="observability_exercise"
 # ---------------------------------------------------------------------------
 # YOUR CODE HERE
-agent = None
-app = None
+agent = build_support_agent(collection_name="observability_exercise")
+app = agent["app"]
 
+result = ask(app, "What is the overdraft fee?")
+print(result["response"])
 # ---------------------------------------------------------------------------
 # TODO 3: Run 3 different queries — one for each agent type
 #
@@ -74,8 +83,10 @@ queries = [
 if app is not None:
     for query in queries:
         print(f"\nQuery: {query}")
-        # YOUR CODE HERE — run the query and print results
-        pass
+        result = ask(app,query)
+        print(f"Intent: {result['intent']}")
+        print(f"Response: {result['response'][:200]}")
+        print(f"Retrieved sources: {result['retrieved_sources']}")
 else:
     print("Complete TODO 2 first.")
 
@@ -96,11 +107,11 @@ else:
 # ---------------------------------------------------------------------------
 
 # Query 1 (Policy):
-#   Agent selected:
-#   Total LLM calls:
-#   Most expensive call tokens:
-#   Total latency:
-#   Retrieved documents:
+#   Agent selected: policy agent 
+#   Total LLM calls: 2
+#   Most expensive call tokens: Clssification :115 , polciy Agent :885(most expensive ) , total = 1000
+#   Total latency:2.59 seconds
+#   Retrieved documents: account_fees.md -> overdraft fee document 
 
 # Query 2 (Account):
 #   Agent selected:
@@ -131,32 +142,42 @@ print("=" * 60)
 if app is not None:
     error_query = "What is the balance on ACC-99999?"
     print(f"\nQuery: {error_query}")
-    # YOUR CODE HERE — run the query and inspect the trace
+    result = ask(app, error_query)
+    print(f"Intent: {result['intent']}")
+    print(f"Response: {result['response']}")
     pass
 else:
     print("Complete TODO 2 first.")
 
 # Write your findings:
-#   Supervisor routed to:
-#   Error origin in trace:
-#   Error flow:
+#   Supervisor routed to: account_agent (intent: account_status)
+#   Error origin in trace: account_agent looks up ACC-99999 in
+#                          MOCK_ACCOUNTS and finds no matching account.
+#   Error flow: account_agent returns a predefined "not found" response
+#               → graph stores it in response → returned as final output.
 
 
 # ---------------------------------------------------------------------------
-# TODO 6 (BONUS): Tag your runs for monitoring
-#
-# Re-run the 3 queries from TODO 3, but this time add tags
-# using the config parameter:
-#   result = app.invoke(inputs, config={"tags": ["your-tag"]})
-#
-# Then filter by your tag in the LangSmith dashboard.
 # ---------------------------------------------------------------------------
 print("\n" + "=" * 60)
 print("BONUS: TAGGED RUNS")
 print("=" * 60)
 
 if app is not None:
-    # YOUR CODE HERE — run queries with tags
-    pass
+    for query in queries:
+        print(f"\nQuery: {query}")
+        result = app.invoke(
+            {
+                "query": query,
+                "intent": "",
+                "response": "",
+                "context": "",
+                "retrieved_sources": [],
+            },
+            config={"tags": ["observability_exercise", "bonus-monitoring"]},
+        )
+        print(f"Intent: {result['intent']}")
+        print(f"Response: {result['response'][:200]}")
+        print(f"Retrieved sources: {result['retrieved_sources']}")
 else:
     print("Complete TODO 2 first.")

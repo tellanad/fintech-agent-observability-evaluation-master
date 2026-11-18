@@ -31,3 +31,13 @@ override-dependencies = [
     "lxml>=5.3.0",
 ]
 
+[tool.pyrefly]
+search-path = [".", "project", "module_b_evaluation"]
+python-interpreter-path = ".venv/bin/python"
+
+[tool.pyright]
+extraPaths = ["project", "module_b_evaluation"]
+venvPath = "."
+venv = ".venv"
+
+

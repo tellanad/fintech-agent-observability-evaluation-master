@@ -13,3 +13,7 @@ audit_log*.jsonl
 .deepeval/
 batch_input.jsonl
 .pdf_images/
+Module B - Evaluation
+Module C - Guardrails
+Module D - Cost Optimization
+Module A - Observability
